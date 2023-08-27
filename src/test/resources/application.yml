@@ -1,0 +1,3 @@
+webclient:
+  github:
+    userDetailsPath: ${GITHUB_API_USER_DETAILS:/users/{username}}
