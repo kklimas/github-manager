@@ -1,84 +1,64 @@
 package com.github.manager.service;
 
+import com.github.manager.mapper.RepositoryBranchDTOMapper;
+import com.github.manager.mapper.UserRepositoryDTOMapper;
 import com.github.manager.model.RepositoryBranchDTO;
 import com.github.manager.model.UserRepositoryDTO;
 import com.github.manager.model.github.response.GithubBranchResponse;
 import com.github.manager.model.github.response.GithubRepositoryResponse;
-import com.github.manager.util.GithubBranchMapper;
-import com.github.manager.util.GithubResponseUtil;
-import com.github.manager.web.exception.GithubApiException;
-import com.github.manager.web.exception.RestErrorResponse;
+import com.github.manager.web.exception.github.RequestLimitExceededException;
+import com.github.manager.web.exception.github.UserNotFoundException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.http.HttpStatus;
 import org.springframework.http.HttpStatusCode;
 import org.springframework.stereotype.Service;
-import org.springframework.web.reactive.function.BodyInserters;
-import org.springframework.web.reactive.function.server.ServerRequest;
-import org.springframework.web.reactive.function.server.ServerResponse;
+import org.springframework.web.reactive.function.client.ClientResponse;
+import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
-
-import java.util.List;
-
-import static org.springframework.http.HttpStatus.NOT_ACCEPTABLE;
 
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class GithubUserService {
+    private static final String USERS_PATH_SEGMENT = "users";
+    private static final String REPOS_PATH_SEGMENT = "repos";
+    private static final String BRANCHES_PATH_SEGMENT = "branches";
 
-    public static final String NOT_ACCEPTABLE_REQUEST_MSG = "Only request with media type application/json can be accepted.";
+    private final WebClient githubClient;
 
-    private static final String UNKNOWN_ERROR_MSG = "Unknown error occurred: %s.";
-    private static final String USERNAME_PARAM = "username";
-
-    private final GithubRequestService githubRequestService;
-
-    public Mono<ServerResponse> findUserDetails(ServerRequest request) {
-        var username = request.pathVariable(USERNAME_PARAM);
-        return findUserDetails(username)
-                .collectList()
-                .flatMap(this::handleResponse)
-                .onErrorResume(this::handleErrorResponse);
-    }
-
-    private Flux<UserRepositoryDTO> findUserDetails(String username) {
-        return githubRequestService.userDetails(username)
-                .onStatus(HttpStatusCode::is4xxClientError, GithubResponseUtil::handleClientError)
+    public Flux<UserRepositoryDTO> findUserDetails(String username) {
+        return githubClient.get()
+                .uri(builder -> builder
+                        .pathSegment(USERS_PATH_SEGMENT, username, REPOS_PATH_SEGMENT)
+                        .build())
+                .retrieve()
+                .onStatus(HttpStatusCode::is4xxClientError, this::handleClientError)
                 .bodyToFlux(GithubRepositoryResponse.class)
-                .filter(repo -> !repo.isFork())
+                .filter(repo -> !repo.fork())
                 .flatMap(repo -> Flux.zip(
                         Flux.just(repo),
-                        findBranchDetails(repo.getName(), username).collectList(),
-                        GithubResponseUtil::handleResponse
-                ));
+                        findBranchDetails(repo.name(), username).collectList(),
+                        UserRepositoryDTOMapper::map)
+                );
     }
 
     private Flux<RepositoryBranchDTO> findBranchDetails(String repositoryName, String username) {
-        return githubRequestService.repositoryBranches(repositoryName, username)
-                .onStatus(HttpStatusCode::is4xxClientError, GithubResponseUtil::handleClientError)
+        return githubClient.get()
+                .uri(builder -> builder
+                        .pathSegment(REPOS_PATH_SEGMENT, username, repositoryName, BRANCHES_PATH_SEGMENT)
+                        .build())
+                .retrieve()
+                .onStatus(HttpStatusCode::is4xxClientError, this::handleClientError)
                 .bodyToFlux(GithubBranchResponse.class)
-                .map(GithubBranchMapper::fromResponse);
+                .map(RepositoryBranchDTOMapper::map);
     }
 
-    private Mono<ServerResponse> handleResponse(List<UserRepositoryDTO> userRepos) {
-        return ServerResponse.ok().body(BodyInserters.fromValue(userRepos));
+    private Mono<? extends Throwable> handleClientError(ClientResponse clientResponse) {
+        return switch (clientResponse.statusCode().value()) {
+            case 403 -> Mono.error(new RequestLimitExceededException());
+            case 404 -> Mono.error(new UserNotFoundException());
+            default -> Mono.error(new RuntimeException(clientResponse.toString()));
+        };
     }
-
-    private Mono<ServerResponse> handleErrorResponse(Throwable error) {
-        if (error instanceof GithubApiException ex) {
-            var restError = RestErrorResponse.of(ex.getStatusCode().value(), ex.getMessage());
-            return ServerResponse.status(ex.getStatusCode()).body(BodyInserters.fromValue(restError));
-        }
-        var code = HttpStatus.INTERNAL_SERVER_ERROR.value();
-        var errorBody = RestErrorResponse.of(code, UNKNOWN_ERROR_MSG.formatted(error.getMessage()));
-        return ServerResponse.status(code).body(BodyInserters.fromValue(errorBody));
-    }
-
-    public Mono<ServerResponse> handleNotAllowedMediaType(ServerRequest request) {
-        var body = RestErrorResponse.of(NOT_ACCEPTABLE.value(), NOT_ACCEPTABLE_REQUEST_MSG);
-        return ServerResponse.status(NOT_ACCEPTABLE).body(BodyInserters.fromValue(body));
-    }
-
 }

@@ -2,7 +2,6 @@ webclient:
   github:
     url: ${GITHUB_API_URL:https://api.github.com}
     apiVersion: ${GITHUB_API_VERSION:2022-11-28}
-    userDetailsPath: ${GITHUB_API_USER_DETAILS:/users/{username}}
 spring:
   webflux:
     base-path: /api

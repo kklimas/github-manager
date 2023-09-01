@@ -14,7 +14,7 @@ import org.springframework.stereotype.Component;
 @EnableConfigurationProperties
 @ConfigurationProperties(prefix = "webclient.github")
 public class GithubApiProperties {
+    private int port;
     private String url;
     private String apiVersion;
-    private String userDetailsPath;
 }
